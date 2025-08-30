@@ -1,0 +1,7 @@
+<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="100%" height="100%" fill="#F5DEB3"/>
+  <rect x="50" y="50" width="412" height="412" fill="#FFEFD5" rx="10"/>
+  <text x="256" y="230" font-family="Arial, sans-serif" font-size="32" fill="#8B4513" text-anchor="middle">🐔</text>
+  <text x="256" y="280" font-family="Arial, sans-serif" font-size="20" fill="#8B4513" text-anchor="middle">Chicken Breast</text>
+  <text x="256" y="310" font-family="Arial, sans-serif" font-size="16" fill="#CD853F" text-anchor="middle">Fresh & Healthy</text>
+</svg>
