@@ -88,7 +88,7 @@ function Home() {
     setError(null);
 
     axios
-      .get('http://localhost:3001/api/products')
+      .get('https://butcher-shop-backend.onrender.com/api/products')
       .then(res => {
         setProducts(res.data);
         setLoading(false);
