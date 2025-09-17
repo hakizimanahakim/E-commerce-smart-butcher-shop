@@ -131,7 +131,7 @@ const CartModal = () => {
               status: 'paid'
             };
 
-            await axios.post('http://localhost:3001/api/orders', orderData);
+            await axios.post('https://butcher-shop-backend.onrender.com/api/orders', orderData);
 
             alert(`Payment successful! Transaction ID: ${response.transaction_id}\nThank you ${customerInfo.name} for your purchase. Your order will be delivered to ${customerInfo.location}.`);
             clearCart();
