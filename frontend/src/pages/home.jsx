@@ -88,7 +88,7 @@ function Home() {
     setError(null);
 
     axios
-      .get('https://butcher-shop-backend.onrender.com/api/products')
+      .get('http://localhost:3001/api/products')
       .then(res => {
         setProducts(res.data);
         setLoading(false);
@@ -447,7 +447,7 @@ function Home() {
                   </div>
                   <div>
                     <div className="text-white font-semibold">Phone</div>
-                    <div className="text-gray-300 text-sm">+250 123 456 789</div>
+                    <div className="text-gray-300 text-sm">+250 799 362 122</div>
                   </div>
                 </a>
 
@@ -476,7 +476,7 @@ function Home() {
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <a
-                    href="https://wa.me/250123456789?text=Hello%20One%20Genesis"
+                    href="https://wa.me/250799362122?text=Hello%20One%20Genesis"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center justify-center space-x-2 px-4 py-3 rounded-xl bg-green-600 hover:bg-green-700 text-white font-semibold transition-colors duration-300"

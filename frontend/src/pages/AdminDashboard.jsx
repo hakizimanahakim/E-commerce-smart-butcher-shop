@@ -16,7 +16,7 @@ function AdminDashboard() {
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
   // Axios instance with auth
-  const api = axios.create({ baseURL: 'https://butcher-shop-backend.onrender.com/api' });
+  const api = axios.create({ baseURL: 'http://localhost:3001/api' });
   api.interceptors.request.use((config) => {
     const token = localStorage.getItem('token');
     if (token) {

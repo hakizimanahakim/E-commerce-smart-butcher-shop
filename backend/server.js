@@ -1,9 +1,15 @@
+// server.js (integrated Flutterwave verification + orders)
+// Load env early
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2');
 const path = require('path');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
+
 const app = express();
 const port = process.env.PORT || 3001;
 
@@ -53,245 +59,239 @@ app.get('/test', (req, res) => {
     res.json({ message: 'Server is working!' });
 });
 
-// MySQL connection
+// MySQL connection (use env vars if available)
 const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'butcher'
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'butcher'
 });
 
-// Test database connection and create database/table if needed
+// Verify helper using Flutterwave secret key
+async function verifyTransaction(transaction_id) {
+  const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
+  if (!FLW_SECRET_KEY) {
+    throw new Error('FLW_SECRET_KEY not configured on the server');
+  }
+  const verifyUrl = `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`;
+  const verifyRes = await axios.get(verifyUrl, {
+    headers: { Authorization: `Bearer ${FLW_SECRET_KEY}` }
+  });
+  return verifyRes.data; // { status: 'success', message: '', data: { ... } }
+}
+
+// Test that DB is reachable and create tables if needed
 db.connect((err) => {
     if (err) {
         console.error('❌ Database connection failed:', err.message);
-        console.log('📝 Please ensure MySQL is running and create the database manually:');
-        console.log('   1. Start MySQL server');
-        console.log('   2. Run: CREATE DATABASE butcher;');
-        console.log('   3. Run: USE butcher;');
-        console.log('   4. Run: CREATE TABLE products (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), price DECIMAL(10,2), image VARCHAR(255), description TEXT);');
-    } else {
-        console.log('✅ Connected to MySQL database');
-
-        // Create products table if it doesn't exist
-        const createProductsTableQuery = `
-            CREATE TABLE IF NOT EXISTS products (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                price DECIMAL(10,2) NOT NULL,
-                image VARCHAR(255),
-                description TEXT
-            )
-        `;
-
-        // Create users table if it doesn't exist
-        const createUsersTableQuery = `
-            CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                username VARCHAR(255) NOT NULL UNIQUE,
-                password VARCHAR(255) NOT NULL,
-                role VARCHAR(50) DEFAULT 'admin',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `;
-
-        // Create products table
-        db.query(createProductsTableQuery, (err) => {
-            if (err) {
-                console.error('❌ Error creating products table:', err);
-            } else {
-                console.log('✅ Products table ready');
-
-                // Create users table
-                db.query(createUsersTableQuery, (err) => {
-                    if (err) {
-                        console.error('❌ Error creating users table:', err);
-                    } else {
-                        console.log('✅ Users table ready');
-
-                        // Check if admin user exists, if not create one
-                        db.query('SELECT * FROM users WHERE username = ?', ['admin'], (err, result) => {
-                            if (err) {
-                                console.error('❌ Error checking admin user:', err);
-                            } else if (result.length === 0) {
-                                // Create default admin user (password: admin123)
-                                const saltRounds = 10;
-                                bcrypt.hash('admin123', saltRounds, (err, hash) => {
-                                    if (err) {
-                                        console.error('❌ Error hashing password:', err);
-                                    } else {
-                                        db.query('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
-                                            ['admin', hash, 'admin'], (err) => {
-                                            if (err) {
-                                                console.error('❌ Error creating admin user:', err);
-                                            } else {
-                                                console.log('✅ Default admin user created (username: admin, password: admin123)');
-                                            }
-                                        });
-                                    }
-                                });
-                            } else {
-                                console.log('✅ Admin user already exists');
-                            }
-                        });
-
-                        // Check if test user exists, if not create one
-                        db.query('SELECT * FROM users WHERE username = ?', ['user'], (err, result) => {
-                            if (err) {
-                                console.error('❌ Error checking test user:', err);
-                            } else if (result.length === 0) {
-                                // Create test user (username: user, password: user123)
-                                const saltRounds = 10;
-                                bcrypt.hash('user123', saltRounds, (err, hash) => {
-                                    if (err) {
-                                        console.error('❌ Error hashing test user password:', err);
-                                    } else {
-                                        db.query('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
-                                            ['user', hash, 'user'], (err) => {
-                                            if (err) {
-                                                console.error('❌ Error creating test user:', err);
-                                            } else {
-                                                console.log('✅ Test user created (username: user, password: user123)');
-                                            }
-                                        });
-                                    }
-                                });
-                            } else {
-                                console.log('✅ Test user already exists');
-                            }
-                        });
-
-                        // Ensure orders table exists with proper schema (no drop in production)
-                        db.query(`CREATE TABLE IF NOT EXISTS orders (
-                            id INT AUTO_INCREMENT PRIMARY KEY,
-                            transaction_id VARCHAR(255),
-                            customer_name VARCHAR(255),
-                            customer_email VARCHAR(255),
-                            customer_phone VARCHAR(20),
-                            customer_address TEXT,
-                            total DECIMAL(10,2),
-                            currency VARCHAR(10) DEFAULT 'RWF',
-                            items TEXT,
-                            status VARCHAR(50) DEFAULT 'pending',
-                            delivery_status VARCHAR(50) DEFAULT 'in_progress',
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        )`, (err) => {
-                            if (err) {
-                                console.error('❌ Error creating orders table:', err);
-                            } else {
-                                console.log('✅ Orders table ready');
-                            }
-                        });
-                    }
-                });
-
-                // Clear old data and insert fresh sample data with correct URLs
-                console.log('🔄 Refreshing product data...');
-                db.query('DELETE FROM products', (err) => {
-                    if (err) {
-                        console.error('❌ Error clearing products:', err);
-                    } else {
-                        console.log('✅ Old product data cleared');
-
-                        const sampleProducts = [
-                            ['Beef chuck(iroti)', 8500, '/images/dicedchucksteak_600x.webp', 'Premium quality beef steak, perfect for grilling'],
-                            ['Chicken Breast', 4500, '/images/Chicken-Breast-Kg-murukali-com-3453_512x512.webp', 'Fresh chicken breast, ideal for healthy meals'],
-                            ['Pork Ribs', 6000, '/images/fitmeat-schweinefleisch-st.louis-cut-ribs-1.jpg', 'Tender pork ribs, great for BBQ'],
-                            ['Ground Beef', 5500, '/images/9867ed76-505e-45ad-b076-11e5c83668a1.jpeg', 'Fresh ground beef for burgers and meatballs'],
-                            ['Lamb Ribs', 9500, '/images/Lamb-Ribs-Plain-600x600-1.jpg', 'Succulent lamb ribs with rich flavor'],
-                            ['Chicken Chest', 8000, '/images/Chicken-Chest--768x768.jpg', 'Delicious Chicken Chest, perfect for special occasions'],
-                            ['Fish fillet', 6000, '/images/Tilapia-Fish-Fillet-murukali-com-2356.webp', 'Tender fish fillet, perfect for special occasions'],
-                            ['Chicken Wings', 7000, '/images/raw-chicken-wings-1.jpg', 'Tender chicken wings, perfect for grilling'],
-                            ['Beef Steak', 8500, '/images/76893-how-to-cook-rump-steak.jpg', 'Premium quality beef steak, perfect for grilling'],
-                            ['Thompson Fish', 10000, '/images/Tomson-Fish1-scaled.jpg', 'Fresh Thompson Fish, perfect for special occasions'],
-                            ['Beef Ribs', 7500, '/images/SpareRibs.webp', 'Tender Ribs, perfect for grilling'],
-                            ['Whole Chicken', 12000, '/images/WhatsApp-Image-2024-10-16-at-19.19.55-500x500.jpeg', 'Fresh Whole Chicken, perfect for special occasions'],
-                            ['Chicken Legs', 6500, '/images/chicken-legs-2.jpeg', 'Tender Chicken Legs, perfect for grilling'],
-                            ['Beef Liver', 9000, '/images/WhatsApp-Image-2024-10-16-at-19.19.20-500x360.jpeg', 'Fresh Beef Liver, perfect for special occasions'],
-                            ['Goat Meat', 10000, '/images/WhatsApp-Image-2024-10-16-at-19.18.54-500x500.jpeg', 'Fresh Goat Meat, perfect for special occasions']
-
-                        ];
-
-                        const insertQuery = 'INSERT INTO products (name, price, image, description) VALUES ?';
-                        db.query(insertQuery, [sampleProducts], (err) => {
-                            if (err) {
-                                console.error('❌ Error inserting sample data:', err);
-                            } else {
-                                console.log('✅ Fresh sample products added to database');
-
-                                // Create sample order
-                                const sampleOrder = {
-                                    transaction_id: 'TXN_SAMPLE_' + Date.now(),
-                                    customer_name: 'John Uwimana',
-                                    customer_email: 'customer@onegenesis.rw',
-                                    customer_phone: '+250788123456',
-                                    customer_address: 'Kigali - Gasabo - Kimironko, Near Kimironko Market',
-                                    total: 15000,
-                                    currency: 'RWF',
-                                    items: JSON.stringify([
-                                        {
-                                            id: 1,
-                                            name: 'Premium Beef',
-                                            price: 5000,
-                                            quantity: 2,
-                                            image: '/images/beef.jpg'
-                                        },
-                                        {
-                                            id: 2,
-                                            name: 'Fresh Chicken',
-                                            price: 2500,
-                                            quantity: 2,
-                                            image: '/images/chicken.jpg'
-                                        }
-                                    ]),
-                                    status: 'paid',
-                                    delivery_status: 'in_progress'
-                                };
-
-                                // Wait a moment for table structure updates, then create sample order
-                                setTimeout(() => {
-                                    db.query('SELECT COUNT(*) as count FROM orders WHERE transaction_id LIKE "TXN_SAMPLE_%"', (err, result) => {
-                                        if (err) {
-                                            console.error('❌ Error checking sample orders:', err);
-                                        } else if (result[0].count === 0) {
-                                            const orderSql = `INSERT INTO orders (
-                                                transaction_id, customer_name, customer_email, customer_phone,
-                                                customer_address, total, currency, items, status, delivery_status, created_at
-                                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
-
-                                            db.query(orderSql, [
-                                                sampleOrder.transaction_id,
-                                                sampleOrder.customer_name,
-                                                sampleOrder.customer_email,
-                                                sampleOrder.customer_phone,
-                                                sampleOrder.customer_address,
-                                                sampleOrder.total,
-                                                sampleOrder.currency,
-                                                sampleOrder.items,
-                                                sampleOrder.status,
-                                                sampleOrder.delivery_status
-                                            ], (err) => {
-                                                if (err) {
-                                                    console.error('❌ Error creating sample order:', err);
-                                                } else {
-                                                    console.log('✅ Sample order created successfully');
-                                                }
-                                            });
-                                        } else {
-                                            console.log('✅ Sample order already exists');
-                                        }
-                                    });
-                                }, 1000); // Wait 1 second for table updates
-                            }
-                        });
-                    }
-                });
-            }
-        });
+        console.log('📝 Please ensure MySQL is running and create the database manually if needed.');
+        console.log('   Example (mysql shell):');
+        console.log('   CREATE DATABASE butcher;');
+        console.log('   USE butcher;');
+        return;
     }
+
+    console.log('✅ Connected to MySQL database');
+
+    const createProductsTableQuery = `
+        CREATE TABLE IF NOT EXISTS products (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            price DECIMAL(10,2) NOT NULL,
+            image VARCHAR(255),
+            description TEXT
+        )
+    `;
+
+    const createUsersTableQuery = `
+        CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(255) NOT NULL UNIQUE,
+            password VARCHAR(255) NOT NULL,
+            role VARCHAR(50) DEFAULT 'admin',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `;
+
+    db.query(createProductsTableQuery, (err) => {
+        if (err) {
+            console.error('❌ Error creating products table:', err);
+            return;
+        }
+        console.log('✅ Products table ready');
+
+        db.query(createUsersTableQuery, (err) => {
+            if (err) {
+                console.error('❌ Error creating users table:', err);
+                return;
+            }
+            console.log('✅ Users table ready');
+
+            // Ensure admin and test users exist
+            db.query('SELECT * FROM users WHERE username = ?', ['admin'], (err, result) => {
+                if (err) {
+                    console.error('❌ Error checking admin user:', err);
+                } else if (result.length === 0) {
+                    const saltRounds = 10;
+                    bcrypt.hash('admin123', saltRounds, (err, hash) => {
+                        if (err) {
+                            console.error('❌ Error hashing password:', err);
+                        } else {
+                            db.query('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
+                                ['admin', hash, 'admin'], (err) => {
+                                if (err) {
+                                    console.error('❌ Error creating admin user:', err);
+                                } else {
+                                    console.log('✅ Default admin user created (username: admin, password: admin123)');
+                                }
+                            });
+                        }
+                    });
+                } else {
+                    console.log('✅ Admin user already exists');
+                }
+            });
+
+            db.query('SELECT * FROM users WHERE username = ?', ['user'], (err, result) => {
+                if (err) {
+                    console.error('❌ Error checking test user:', err);
+                } else if (result.length === 0) {
+                    const saltRounds = 10;
+                    bcrypt.hash('user123', saltRounds, (err, hash) => {
+                        if (err) {
+                            console.error('❌ Error hashing test user password:', err);
+                        } else {
+                            db.query('INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
+                                ['user', hash, 'user'], (err) => {
+                                if (err) {
+                                    console.error('❌ Error creating test user:', err);
+                                } else {
+                                    console.log('✅ Test user created (username: user, password: user123)');
+                                }
+                            });
+                        }
+                    });
+                } else {
+                    console.log('✅ Test user already exists');
+                }
+            });
+
+            // Ensure orders table exists
+            const createOrdersQuery = `CREATE TABLE IF NOT EXISTS orders (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                transaction_id VARCHAR(255),
+                customer_name VARCHAR(255),
+                customer_email VARCHAR(255),
+                customer_phone VARCHAR(20),
+                customer_address TEXT,
+                total DECIMAL(10,2),
+                currency VARCHAR(10) DEFAULT 'RWF',
+                items TEXT,
+                status VARCHAR(50) DEFAULT 'pending',
+                delivery_status VARCHAR(50) DEFAULT 'in_progress',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`;
+
+            db.query(createOrdersQuery, (err) => {
+                if (err) {
+                    console.error('❌ Error creating orders table:', err);
+                } else {
+                    console.log('✅ Orders table ready');
+                }
+            });
+
+            // Refresh sample product data
+            console.log('🔄 Refreshing product data...');
+            db.query('DELETE FROM products', (err) => {
+                if (err) {
+                    console.error('❌ Error clearing products:', err);
+                } else {
+                    console.log('✅ Old product data cleared');
+
+                    const sampleProducts = [
+                        ['Beef chuck(iroti)', 8500, '/images/dicedchucksteak_600x.webp', 'Premium quality beef steak, perfect for grilling'],
+                        ['Chicken Breast', 4500, '/images/Chicken-Breast-Kg-murukali-com-3453_512x512.webp', 'Fresh chicken breast, ideal for healthy meals'],
+                        ['Pork Ribs', 6000, '/images/fitmeat-schweinefleisch-st.louis-cut-ribs-1.jpg', 'Tender pork ribs, great for BBQ'],
+                        ['Ground Beef', 5500, '/images/9867ed76-505e-45ad-b076-11e5c83668a1.jpeg', 'Fresh ground beef for burgers and meatballs'],
+                        ['Lamb Ribs', 9500, '/images/Lamb-Ribs-Plain-600x600-1.jpg', 'Succulent lamb ribs with rich flavor'],
+                        ['Chicken Chest', 8000, '/images/Chicken-Chest--768x768.jpg', 'Delicious Chicken Chest, perfect for special occasions'],
+                        ['Fish fillet', 6000, '/images/Tilapia-Fish-Fillet-murukali-com-2356.webp', 'Tender fish fillet, perfect for special occasions'],
+                        ['Chicken Wings', 7000, '/images/raw-chicken-wings-1.jpg', 'Tender chicken wings, perfect for grilling'],
+                        ['Beef Steak', 8500, '/images/76893-how-to-cook-rump-steak.jpg', 'Premium quality beef steak, perfect for grilling'],
+                        ['Thompson Fish', 10000, '/images/Tomson-Fish1-scaled.jpg', 'Fresh Thompson Fish, perfect for special occasions'],
+                        ['Beef Ribs', 7500, '/images/SpareRibs.webp', 'Tender Ribs, perfect for grilling'],
+                        ['Whole Chicken', 12000, '/images/WhatsApp-Image-2024-10-16-at-19.19.55-500x500.jpeg', 'Fresh Whole Chicken, perfect for special occasions'],
+                        ['Chicken Legs', 6500, '/images/chicken-legs-2.jpeg', 'Tender Chicken Legs, perfect for grilling'],
+                        ['Beef Liver', 9000, '/images/WhatsApp-Image-2024-10-16-at-19.19.20-500x360.jpeg', 'Fresh Beef Liver, perfect for special occasions'],
+                        ['Goat Meat', 10000, '/images/WhatsApp-Image-2024-10-16-at-19.18.54-500x500.jpeg', 'Fresh Goat Meat, perfect for special occasions']
+                    ];
+
+                    const insertQuery = 'INSERT INTO products (name, price, image, description) VALUES ?';
+                    db.query(insertQuery, [sampleProducts], (err) => {
+                        if (err) {
+                            console.error('❌ Error inserting sample data:', err);
+                        } else {
+                            console.log('✅ Fresh sample products added to database');
+
+                            // Create a sample order if none exist
+                            const sampleOrder = {
+                                transaction_id: 'TXN_SAMPLE_' + Date.now(),
+                                customer_name: 'John Uwimana',
+                                customer_email: 'customer@onegenesis.rw',
+                                customer_phone: '+250788123456',
+                                customer_address: 'Kigali - Gasabo - Kimironko, Near Kimironko Market',
+                                total: 15000,
+                                currency: 'RWF',
+                                items: JSON.stringify([
+                                    { id: 1, name: 'Premium Beef', price: 5000, quantity: 2, image: '/images/beef.jpg' },
+                                    { id: 2, name: 'Fresh Chicken', price: 2500, quantity: 2, image: '/images/chicken.jpg' }
+                                ]),
+                                status: 'paid',
+                                delivery_status: 'in_progress'
+                            };
+
+                            setTimeout(() => {
+                                db.query('SELECT COUNT(*) as count FROM orders WHERE transaction_id LIKE "TXN_SAMPLE_%"', (err, result) => {
+                                    if (err) {
+                                        console.error('❌ Error checking sample orders:', err);
+                                    } else if (result[0].count === 0) {
+                                        const orderSql = `INSERT INTO orders (
+                                            transaction_id, customer_name, customer_email, customer_phone,
+                                            customer_address, total, currency, items, status, delivery_status, created_at
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
+
+                                        db.query(orderSql, [
+                                            sampleOrder.transaction_id,
+                                            sampleOrder.customer_name,
+                                            sampleOrder.customer_email,
+                                            sampleOrder.customer_phone,
+                                            sampleOrder.customer_address,
+                                            sampleOrder.total,
+                                            sampleOrder.currency,
+                                            sampleOrder.items,
+                                            sampleOrder.status,
+                                            sampleOrder.delivery_status
+                                        ], (err) => {
+                                            if (err) {
+                                                console.error('❌ Error creating sample order:', err);
+                                            } else {
+                                                console.log('✅ Sample order created successfully');
+                                            }
+                                        });
+                                    } else {
+                                        console.log('✅ Sample order already exists');
+                                    }
+                                });
+                            }, 1000);
+                        }
+                    });
+                }
+            });
+        });
+    });
 });
 
-// Get all products (public)
+// Public: get all products
 app.get('/api/products', (req, res) => {
     console.log('📝 GET /api/products request received');
     db.query('SELECT * FROM products', (err, result) => {
@@ -307,7 +307,7 @@ app.get('/api/products', (req, res) => {
     });
 });
 
-// Update product (admin only)
+// Update product (admin)
 app.put('/api/products/:id', authenticateToken, requireAdmin, (req, res) => {
     const { id } = req.params;
     const { name, price, description } = req.body;
@@ -334,7 +334,7 @@ app.put('/api/products/:id', authenticateToken, requireAdmin, (req, res) => {
     });
 });
 
-// Delete product (admin only)
+// Delete product (admin)
 app.delete('/api/products/:id', authenticateToken, requireAdmin, (req, res) => {
     const { id } = req.params;
     console.log(`🗑️ DELETE /api/products/${id} request received`);
@@ -356,9 +356,7 @@ app.delete('/api/products/:id', authenticateToken, requireAdmin, (req, res) => {
     });
 });
 
-
-
-// Add a product (admin only)
+// Add a product (admin)
 app.post('/api/products', authenticateToken, requireAdmin, (req, res) => {
     const { name, price, image } = req.body;
     db.query(
@@ -428,39 +426,48 @@ app.post('/api/login', (req, res) => {
     });
 });
 
+// Dedicated verify endpoint (useful if you want to verify before /orders)
+app.post('/api/verify-payment', async (req, res) => {
+  try {
+    const { transaction_id } = req.body;
+    if (!transaction_id) return res.status(400).json({ error: 'transaction_id is required' });
+
+    const verification = await verifyTransaction(transaction_id);
+    res.json(verification);
+  } catch (error) {
+    console.error('❌ /api/verify-payment error:', error.response?.data || error.message || error);
+    res.status(500).json({ error: 'Verification failed', details: error.response?.data || error.message });
+  }
+});
+
 // Create order after successful payment (public endpoint from payment callback)
 app.post('/api/orders', async (req, res) => {
-  const axios = require('axios');
-  const {
-    transaction_id,
-    amount,
-    currency,
-    customer_email,
-    customer_phone,
-    customer_name,
-    customer_address,
-    items
-  } = req.body;
-
-  if (!transaction_id || !amount || !currency) {
-    return res.status(400).json({ error: 'transaction_id, amount, and currency are required' });
-  }
-
   try {
-    const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
-    if (!FLW_SECRET_KEY) {
-      console.warn('⚠️ FLW_SECRET_KEY not set. Rejecting order creation in production.');
-      // In dev you may choose to allow; for safety, we block here
-      return res.status(500).json({ error: 'Payment verification not configured' });
+    const {
+      transaction_id,
+      amount,
+      currency,
+      customer_email,
+      customer_phone,
+      customer_name,
+      customer_address,
+      items
+    } = req.body;
+
+    if (!transaction_id || !amount || !currency) {
+      return res.status(400).json({ error: 'transaction_id, amount, and currency are required' });
     }
 
     // Verify transaction with Flutterwave
-    const verifyUrl = `https://api.flutterwave.com/v3/transactions/${transaction_id}/verify`;
-    const verifyRes = await axios.get(verifyUrl, {
-      headers: { Authorization: `Bearer ${FLW_SECRET_KEY}` }
-    });
+    let verification;
+    try {
+      verification = await verifyTransaction(transaction_id);
+    } catch (err) {
+      console.error('Payment verification failed (verifyTransaction):', err.response?.data || err.message || err);
+      return res.status(400).json({ error: 'Payment verification failed', details: err.response?.data || err.message });
+    }
 
-    const v = verifyRes.data?.data;
+    const v = verification?.data;
     if (!v) {
       return res.status(400).json({ error: 'Invalid verification response' });
     }
@@ -525,8 +532,8 @@ app.post('/api/orders', async (req, res) => {
       });
     });
   } catch (error) {
-    console.error('Payment verification failed:', error.response?.data || error.message);
-    res.status(400).json({ error: 'Payment verification failed', details: error.response?.data || error.message });
+    console.error('Unexpected /api/orders error:', error.response?.data || error.message || error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 
@@ -536,7 +543,7 @@ app.get('/api/orders', authenticateToken, (req, res) => {
     if (err) return res.status(500).json({ error: err });
 
     // Parse items JSON for each order with error handling
-    const ordersWithParsedItems = results.map(order => ({
+    const ordersWithParsedItems = results.map(order => ( {
       ...order,
       items: order.items ? (() => {
         try {
@@ -643,7 +650,6 @@ app.delete('/api/users/:id', authenticateToken, requireAdmin, (req, res) => {
     res.json({ message: 'User deleted successfully' });
   });
 });
-
 
 // Start server
 app.listen(port, () => {
